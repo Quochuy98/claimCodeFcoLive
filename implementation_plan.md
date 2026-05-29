@@ -1,6 +1,6 @@
 # Telegram Bot Commands cho YTB_FCO
 
-Chuyển project từ script chạy hardcoded sang Telegram Bot dùng **Telegraf**, điều khiển qua commands.
+Chuyển project từ script chạy hardcoded sang Telegram Bot dùng **Telegraf**, điều khiển qua commands và kết nối Supabase động.
 
 ## Proposed Changes
 
@@ -58,7 +58,7 @@ create table public.accounts (
 
 Dùng `dotenv` để load `.env`, export cấu hình:
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — đọc từ `process.env`
-- `THRESHOLD`, `RESET_INTERVAL`, `CODE_REGEX`
+- `THRESHOLD`, `RESET_INTERVAL` (3 phút), `CODE_REGEX`
 - *(Loại bỏ mảng tĩnh `ACCOUNTS` để chuyển sang Supabase)*
 
 ---
@@ -87,11 +87,14 @@ Trong `triggerNotification(code)`:
 > [!NOTE]
 > Phát hiện "đã claim" qua response API: kiểm tra `result.msg` chứa "already", "claimed", "used", "redeemed" hoặc message tiếng Việt tương ứng.
 
+> [!TIP]
+> **Xử lý an toàn Response lỗi (Không phải JSON)**: Tích hợp kiểm tra `content-type` trong `redeemCode`. Nếu Garena trả về HTML (ví dụ phiên đăng nhập hết hạn hoặc Cloudflare chặn), hệ thống sẽ không cố đọc JSON để tránh lỗi cú pháp `Unexpected token`, thay vào đó sẽ nhận dạng và thông báo lỗi hết hạn hoặc mã trạng thái HTTP rõ ràng.
+
 ---
 
 ### [NEW] [bot.js](file:///d:/Workspace/YTB_FCO/bot.js)
 
-Telegraf bot với 5 commands:
+Telegraf bot với 7 commands:
 
 #### `/set [account_name] [cURL_command]`
 1. Nhận tên gợi nhớ `account_name` (ví dụ: `huytq1998`) và phần còn lại chứa lệnh cURL.
@@ -120,7 +123,19 @@ Telegraf bot với 5 commands:
 3. Edit message xác nhận: "⏹️ Đã dừng theo dõi"
 
 #### `/status`
-- Bonus command: hiển thị trạng thái hiện tại (video ID đang set, đang chạy hay dừng, số code đã phát hiện)
+- Hiển thị trạng thái hiện tại (video ID đang set, đang chạy hay dừng, số code đã phát hiện, số code đang chờ)
+
+#### `/coupon [code] [account_name]`
+- Nạp coupon thủ công. 
+- Nhận mã coupon bắt buộc `code` (luôn là tham số đầu tiên).
+- Nhận tham số tùy chọn `account_name` ở vị trí thứ hai.
+- Nếu không có `account_name` -> nạp cho tất cả các tài khoản đang lưu ở Supabase.
+- Nếu có `account_name` -> chỉ nạp duy nhất cho tài khoản được chỉ định.
+- Trả về kết quả HTML chi tiết, thân thiện, tự động escape ký tự HTML bằng helper `escapeHTML`.
+
+#### `/accounts`
+- Lấy toàn bộ tài khoản từ Supabase.
+- Hiển thị danh sách đánh số trực quan, che bớt (masking) token CSRF/Session chỉ giữ lại 8 ký tự đầu để đảm bảo an toàn thông tin.
 
 **Reply flow (edit message)**:
 ```
@@ -141,29 +156,24 @@ process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 ```
 
-Giữ nguyên các hàm `sendTelegram()`, `redeemCode()`, `triggerNotification()` — có thể tách ra `services.js` hoặc giữ trong `livechat.js` tùy context.
-
-> [!IMPORTANT]
-> Các hàm `redeemCode()` và `triggerNotification()` (gọi API Garena) sẽ **giữ nguyên logic** trong phase này, chỉ di chuyển sang file phù hợp. Phase sau mới xử lý token/account.
-
 ---
 
 ### [MODIFY] [package.json](file:///d:/Workspace/YTB_FCO/package.json)
 
 Thêm dependencies:
-```diff
+```json
 "dependencies": {
-+   "@supabase/supabase-js": "^2.x",
-+   "dotenv": "^16.x",
-+   "telegraf": "^4.16.3",
+    "@supabase/supabase-js": "^2.x",
+    "dotenv": "^16.x",
+    "telegraf": "^4.16.3",
     "youtube-chat": "^2.2.0"
 }
 ```
 
 Thêm script:
-```diff
+```json
 "scripts": {
-+   "start": "node index.js",
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
 }
 ```
@@ -213,7 +223,10 @@ node index.js
 - Gửi `/youtube https://www.youtube.com/live/testid` → bot reply + edit xác nhận Video ID
 - Gửi `/start_ytb` → bot reply "đang kết nối" rồi edit kết quả
 - Gửi `/stop_ytb` → bot edit xác nhận dừng
-- Gửi `/start_ytb` khi chưa set link → bot edit báo lỗi
+- Gửi `/status` -> hiển thị trạng thái động của bot
+- Gửi `/accounts` -> trả về danh sách tài khoản che bớt token
+- Gửi `/coupon CODETEST` -> nạp đồng loạt cho các account và trả về HTML
+- Gửi `/coupon CODETEST huytq1998` -> nạp chỉ cho account huytq1998
 
 ### Manual Verification
 - Test trực tiếp trên Telegram chat với bot
