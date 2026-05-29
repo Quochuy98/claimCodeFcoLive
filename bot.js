@@ -84,6 +84,7 @@ bot.start((ctx) => {
         `  /start\\_ytb — Bắt đầu theo dõi\n` +
         `  /stop\\_ytb — Dừng theo dõi\n` +
         `  /status — Xem trạng thái\n` +
+        `  /accounts — Danh sách tài khoản\n` +
         `  /coupon \\<code\\> \\[tên\\_acc\\] — Nạp code thủ công\n` +
         `  /set \\<tên\\_acc\\> \\<cURL\\> — Lưu account từ cURL`,
         { parse_mode: "MarkdownV2" }
@@ -328,6 +329,45 @@ bot.command("coupon", async (ctx) => {
         ...results,
         ``,
         `⏰ <i>${time}</i>`,
+    ].join("\n");
+
+    await ctx.telegram.editMessageText(
+        ctx.chat.id, msg.message_id, undefined,
+        telegramMsg,
+        { parse_mode: "HTML" }
+    );
+});
+
+// ---- /accounts ----
+bot.command("accounts", async (ctx) => {
+    const msg = await ctx.reply("⏳ Đang lấy danh sách tài khoản từ Supabase...");
+
+    const accounts = await getAccounts();
+    if (accounts.length === 0) {
+        await ctx.telegram.editMessageText(
+            ctx.chat.id, msg.message_id, undefined,
+            "⚠️ Chưa có tài khoản nào được lưu trữ trong Supabase!\n\n💡 Dùng lệnh /set để thêm tài khoản mới."
+        );
+        return;
+    }
+
+    const results = [];
+    for (const [index, account] of accounts.entries()) {
+        const csrfMask = account.csrf ? `${account.csrf.substring(0, 8)}...` : "N/A";
+        const sessionMask = account.session ? `${account.session.substring(0, 8)}...` : "N/A";
+        results.push(
+            `${index + 1}. <b>${escapeHTML(account.name)}</b>\n` +
+            `   • CSRF: <code>${escapeHTML(csrfMask)}</code>\n` +
+            `   • Session: <code>${escapeHTML(sessionMask)}</code>`
+        );
+    }
+
+    const telegramMsg = [
+        `👤 <b>Danh Sách Tài Khoản Đang Hoạt Động (${accounts.length})</b>`,
+        ``,
+        ...results,
+        ``,
+        `💡 <i>Dùng lệnh /set để cập nhật hoặc thêm tài khoản mới.</i>`
     ].join("\n");
 
     await ctx.telegram.editMessageText(
