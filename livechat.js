@@ -24,6 +24,17 @@ const processedChatIds = new Set();
 // =============================================
 
 /**
+ * Helper: Escape HTML
+ */
+function escapeHTML(str) {
+    if (!str) return "";
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+/**
  * Gửi tin nhắn Telegram
  */
 async function sendTelegram(text) {
@@ -31,7 +42,11 @@ async function sendTelegram(text) {
         await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+            body: JSON.stringify({ 
+                chat_id: TELEGRAM_CHAT_ID, 
+                text,
+                parse_mode: "HTML"
+            }),
         });
     } catch (err) {
         console.error("❌ Lỗi gửi Telegram:", err.message);
@@ -62,7 +77,17 @@ async function redeemCode(code, account) {
             return data;
         } else {
             const text = await res.text();
-            if (res.status === 401 || res.status === 403 || text.includes("login") || text.includes("signin")) {
+            const lowerText = text.toLowerCase();
+            const isAuthError = res.status === 401 || 
+                                res.status === 403 || 
+                                res.status === 200 || // Nếu HTTP 200 nhưng không phải JSON thì là trang đăng nhập/redirect của Garena
+                                lowerText.includes("login") || 
+                                lowerText.includes("signin") || 
+                                lowerText.includes("sso") ||
+                                lowerText.includes("redirect") ||
+                                lowerText.includes("đăng nhập");
+
+            if (isAuthError) {
                 return { status: "failed", msg: "Cookie/Session hết hạn hoặc không hợp lệ. Hãy dùng /set để cập nhật." };
             }
             return { status: "failed", msg: `Lỗi kết nối Garena (Mã: ${res.status}).` };
@@ -103,7 +128,8 @@ async function triggerNotification(code) {
         return;
     }
 
-    for (const account of accounts) {
+    for (let i = 0; i < accounts.length; i++) {
+        const account = accounts[i];
         console.log(`🔄 Đang nhập code ${code} cho [${account.name}]...`);
         const result = await redeemCode(code, account);
         const json = JSON.stringify(result);
@@ -120,7 +146,12 @@ async function triggerNotification(code) {
         const reward = result.payload?.reward?.replace(/<br\/>/g, "\n") || "";
         const detail = isSuccess ? reward : (result.payload || result.message || result.msg || json);
         console.log(`📨 [${account.name}] ${status}: ${json}`);
-        results.push(`  • ${account.name}: ${status}\n    ${detail}`);
+        results.push(`  • <b>${escapeHTML(account.name)}</b>: ${status}\n    <i>${escapeHTML(detail)}</i>`);
+
+        // Tránh spam quá nhanh gây block IP / Rate Limit của Garena
+        if (i < accounts.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
     }
 
     // Cache code nếu đã redeem thành công hoặc tất cả account đều đã claim rồi
@@ -136,7 +167,7 @@ async function triggerNotification(code) {
     }
 
     const telegramMsg = [
-        `🎁 Code FCO: ${code}`,
+        `🎁 Code FCO: <code>${code}</code>`,
         ``,
         `📊 Kết quả:`,
         ...results,
@@ -288,11 +319,41 @@ function getStatus() {
     };
 }
 
+/**
+ * Kiểm tra trạng thái session của tài khoản bằng cách gọi API Lịch sử nhận quà
+ */
+async function checkSession(account) {
+    try {
+        const res = await fetch("https://coupon.fconline.garena.vn/api/user/history", {
+            method: "GET",
+            headers: {
+                "Accept": "*/*",
+                "Origin": "https://coupon.fconline.garena.vn",
+                "Referer": "https://coupon.fconline.garena.vn/",
+                "X-CSRFToken": account.csrf,
+                "Cookie": `csrftoken=${account.csrf}; sessionid=${account.session}`,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            }
+        });
+
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+            const data = await res.json();
+            return { success: true, msg: "Hoạt động tốt (Valid)" };
+        } else {
+            return { success: false, msg: "Hết hạn hoặc Cookie không hợp lệ" };
+        }
+    } catch (err) {
+        return { success: false, msg: `Lỗi kết nối: ${err.message}` };
+    }
+}
+
 module.exports = {
     startLiveChat,
     stopLiveChat,
     isRunning,
     getStatus,
-    redeemCode
+    redeemCode,
+    checkSession
 };
 

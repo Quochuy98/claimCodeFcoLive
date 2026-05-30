@@ -1,13 +1,28 @@
 const { Telegraf } = require("telegraf");
 const { TELEGRAM_BOT_TOKEN } = require("./config");
-const { startLiveChat, stopLiveChat, isRunning, getStatus, redeemCode } = require("./livechat");
+const { startLiveChat, stopLiveChat, isRunning, getStatus, redeemCode, checkSession } = require("./livechat");
 const { upsertAccount, getAccounts } = require("./db");
+const fs = require("fs");
+const path = require("path");
 
 // =============================================
 // STATE
 // =============================================
 
+const STATE_FILE = path.join(__dirname, "state.json");
+
 let currentVideoId = null;
+try {
+    if (fs.existsSync(STATE_FILE)) {
+        const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+        if (data.videoId) {
+            currentVideoId = data.videoId;
+            console.log(`📺 Đã khôi phục Link YouTube từ state.json: https://www.youtube.com/live/${currentVideoId}`);
+        }
+    }
+} catch (err) {
+    console.error("⚠️ Không thể đọc file state.json:", err.message);
+}
 
 // =============================================
 // HELPERS
@@ -85,6 +100,7 @@ bot.start((ctx) => {
         `  /stop\\_ytb — Dừng theo dõi\n` +
         `  /status — Xem trạng thái\n` +
         `  /accounts — Danh sách tài khoản\n` +
+        `  /test\\_api — Kiểm tra trạng thái session\n` +
         `  /coupon \\<code\\> \\[tên\\_acc\\] — Nạp code thủ công\n` +
         `  /set \\<tên\\_acc\\> \\<cURL\\> — Lưu account từ cURL`,
         { parse_mode: "MarkdownV2" }
@@ -121,6 +137,14 @@ bot.command("youtube", async (ctx) => {
     }
 
     currentVideoId = videoId;
+
+    // Lưu link YouTube vào file state.json để restart không bị mất
+    try {
+        fs.writeFileSync(STATE_FILE, JSON.stringify({ videoId }), "utf-8");
+        console.log(`💾 Đã lưu Video ID ${videoId} vào state.json để ghi nhớ link`);
+    } catch (err) {
+        console.error("❌ Lỗi lưu file state.json:", err.message);
+    }
 
     const msg = await ctx.reply("⏳ Đang xử lý...");
     await ctx.telegram.editMessageText(
@@ -306,7 +330,8 @@ bot.command("coupon", async (ctx) => {
     const results = [];
     const time = new Date().toLocaleString("vi-VN");
 
-    for (const account of accounts) {
+    for (let i = 0; i < accounts.length; i++) {
+        const account = accounts[i];
         const result = await redeemCode(code, account);
         const json = JSON.stringify(result);
         const isSuccess = result.status === "successful";
@@ -319,6 +344,11 @@ bot.command("coupon", async (ctx) => {
         const detail = isSuccess ? reward : (result.payload || result.message || result.msg || json);
 
         results.push(`• <b>${escapeHTML(account.name)}</b>: ${status}\n  <i>${escapeHTML(detail)}</i>`);
+
+        // Tránh spam quá nhanh gây block IP / Rate Limit của Garena
+        if (i < accounts.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
     }
 
     const telegramMsg = [
@@ -368,6 +398,51 @@ bot.command("accounts", async (ctx) => {
         ...results,
         ``,
         `💡 <i>Dùng lệnh /set để cập nhật hoặc thêm tài khoản mới.</i>`
+    ].join("\n");
+
+    await ctx.telegram.editMessageText(
+        ctx.chat.id, msg.message_id, undefined,
+        telegramMsg,
+        { parse_mode: "HTML" }
+    );
+});
+
+// ---- /test_api ----
+bot.command("test_api", async (ctx) => {
+    const msg = await ctx.reply("⏳ Đang kiểm tra trạng thái Session của tất cả tài khoản...");
+
+    const accounts = await getAccounts();
+    if (accounts.length === 0) {
+        await ctx.telegram.editMessageText(
+            ctx.chat.id, msg.message_id, undefined,
+            "⚠️ Không tìm thấy tài khoản nào trong Supabase!"
+        );
+        return;
+    }
+
+    const results = [];
+    const time = new Date().toLocaleString("vi-VN");
+
+    for (let i = 0; i < accounts.length; i++) {
+        const account = accounts[i];
+        const statusResult = await checkSession(account);
+        const statusIcon = statusResult.success ? "✅ VALID" : "❌ EXPIRED";
+        
+        results.push(`• <b>${escapeHTML(account.name)}</b>: ${statusIcon}\n  <i>${escapeHTML(statusResult.msg)}</i>`);
+
+        // Tránh spam quá nhanh gây block IP
+        if (i < accounts.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+    }
+
+    const telegramMsg = [
+        `🔍 <b>Kết Quả Kiểm Tra Session</b>`,
+        ``,
+        `📊 <b>Chi tiết:</b>`,
+        ...results,
+        ``,
+        `⏰ <i>${time}</i>`,
     ].join("\n");
 
     await ctx.telegram.editMessageText(
